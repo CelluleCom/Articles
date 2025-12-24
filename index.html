@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planning Éditorial Grist</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://grist.getgrist.com/grist-api.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+    </style>
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom": "https://esm.sh/react-dom@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "recharts": "https://esm.sh/recharts@2.12.7",
+        "htm": "https://esm.sh/htm@3.1.1"
+      }
+    }
+    </script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-slate-50 text-slate-900 h-screen overflow-hidden">
+    <div id="root" class="h-full"></div>
+
+    <script type="module">
+        import React, { useState, useEffect, useMemo } from 'react';
+        import ReactDOM from 'react-dom/client';
+        import htm from 'htm';
+        import { 
+            BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+            PieChart, Pie, Cell, AreaChart, Area 
+        } from 'recharts';
+
+        const html = htm.bind(React.createElement);
+
+        // --- TYPES & ENUMS ---
+        const ArticleStatus = {
+            VALIDE: 'Validé',
+            REPORTE: 'Reporté',
+            EN_COURS: 'En cours',
+            PUBLIE: 'Publié',
+            ANNULE: 'Annulé'
+        };
+
+        // --- UTILS ---
+        const parseCSV = (csvText) => {
+            const lines = csvText.split('\n');
+            if (lines.length < 1) return [];
+            const headers = lines[0].split(',').map(h => h.trim());
+            return lines.slice(1).filter(l => l.trim()).map((line, idx) => {
+                const values = line.split(',').map(v => v.trim());
+                const data = {};
+                headers.forEach((h, i) => { data[h] = values[i]; });
+                return {
+                    id: Date.now() + idx,
+                    titre: data['titre'] || 'Sans titre',
+                    type: data['type'] || 'Article',
+                    redacteur: data['redacteur'] || 'Inconnu',
+                    status: data['status'] || ArticleStatus.EN_COURS,
+                    datePublication: data['datePublication'] || ''
+                };
+            });
+        };
+
+        const exportToCSV = (articles) => {
+            const headers = ['titre', 'type', 'redacteur', 'status', 'datePublication'];
+            const rows = articles.map(a => [a.titre, a.type, a.redacteur, a.status, a.datePublication].join(','));
+            const csvContent = [headers.join(','), ...rows].join('\n');
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `planning_editorial_${new Date().toISOString().split('T')[0]}.csv`;
+            link.click();
+        };
+
+        // --- COMPONENTS ---
+
+        const StatusBadge = ({ status }) => {
+            const styles = {
+                [ArticleStatus.VALIDE]: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+                [ArticleStatus.REPORTE]: 'bg-amber-100 text-amber-700 border-amber-200',
+                [ArticleStatus.EN_COURS]: 'bg-blue-100 text-blue-700 border-blue-200',
+                [ArticleStatus.PUBLIE]: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+                [ArticleStatus.ANNULE]: 'bg-rose-100 text-rose-700 border-rose-200'
+            };
+            return html`
+                <span className=${`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ${styles[status] || styles[ArticleStatus.EN_COURS]}`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-current mr-1.5" />
+                    ${status}
+                </span>
+            `;
+        };
+
+        const Sidebar = ({ currentView, onViewChange, onExport, onImport }) => html`
+            <aside className="w-64 bg-slate-900 text-white flex flex-col h-full shrink-0">
+                <div className="p-6 flex items-center space-x-3">
+                    <div className="w-10 h-10 bg-indigo-500 rounded-lg flex items-center justify-center">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10l4 4v10a2 2 0 01-2 2z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 2v4a2 2 0 002 2h4" /></svg>
+                    </div>
+                    <span className="font-bold text-lg tracking-tight">Grist Edit</span>
+                </div>
+                <nav className="flex-1 px-4 space-y-2 mt-4">
+                    ${['planning', 'calendar', 'stats'].map(view => html`
+                        <button key=${view} onClick=${() => onViewChange(view)} className=${`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition ${currentView === view ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+                            <span className="capitalize">${view === 'stats' ? 'Statistiques' : view === 'planning' ? 'Planning' : 'Calendrier'}</span>
+                        </button>
+                    `)}
+                </nav>
+                <div className="p-4 border-t border-slate-800 space-y-2">
+                    <label className="flex items-center space-x-3 px-4 py-2 text-sm font-medium text-slate-400 hover:text-white cursor-pointer transition">
+                        <span>Importer CSV</span>
+                        <input type="file" accept=".csv" onChange=${onImport} className="hidden" />
+                    </label>
+                    <button onClick=${onExport} className="w-full text-left px-4 py-2 text-sm font-medium text-slate-400 hover:text-white transition">Exporter CSV</button>
+                </div>
+            </aside>
+        `;
+
+        const MonthGroup = ({ title, articles, defaultOpen }) => {
+            const [isOpen, setIsOpen] = useState(defaultOpen);
+            if (!articles || articles.length === 0) return null;
+            return html`
+                <div className="border rounded-2xl overflow-hidden bg-white shadow-sm mb-4">
+                    <button onClick=${() => setIsOpen(!isOpen)} className="w-full flex items-center justify-between p-4 bg-white hover:bg-slate-50 transition">
+                        <div className="flex items-center space-x-3">
+                            <div className="w-2 h-8 rounded-full bg-indigo-500" />
+                            <h3 className="font-bold text-lg text-slate-800">${title}</h3>
+                            <span className="text-sm bg-slate-100 px-2 py-0.5 rounded text-slate-500">${articles.length} article(s)</span>
+                        </div>
+                        <svg className=${`w-5 h-5 text-slate-400 transition ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                    ${isOpen && html`
+                        <div className="overflow-x-auto border-t">
+                            <table className="w-full text-left text-sm">
+                                <thead className="bg-slate-50 text-slate-500 font-medium border-b uppercase text-xs">
+                                    <tr><th className="px-6 py-3">Statut</th><th className="px-6 py-3">Titre</th><th className="px-6 py-3">Type</th><th className="px-6 py-3">Rédacteur</th><th className="px-6 py-3">Publication</th></tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    ${articles.map((article) => html`
+                                        <tr key=${article.id} className="hover:bg-slate-50 transition">
+                                            <td className="px-6 py-4"><${StatusBadge} status=${article.status} /></td>
+                                            <td className="px-6 py-4 font-semibold text-slate-700">${article.titre}</td>
+                                            <td className="px-6 py-4 text-slate-500">${article.type}</td>
+                                            <td className="px-6 py-4 text-slate-600">${article.redacteur}</td>
+                                            <td className="px-6 py-4 font-mono text-xs">${article.datePublication ? new Date(article.datePublication).toLocaleDateString('fr-FR') : '-'}</td>
+                                        </tr>
+                                    `)}
+                                </tbody>
+                            </table>
+                        </div>
+                    `}
+                </div>
+            `;
+        };
+
+        const PlanningView = ({ articles }) => {
+            const currentMonth = new Date().getMonth();
+            const currentYear = new Date().getFullYear();
+            const grouped = useMemo(() => {
+                const months = {};
+                const published = [];
+                const cancelled = [];
+                articles.forEach((article) => {
+                    if (article.status === ArticleStatus.PUBLIE) published.push(article);
+                    else if (article.status === ArticleStatus.ANNULE) cancelled.push(article);
+                    else {
+                        const date = article.datePublication ? new Date(article.datePublication) : null;
+                        const key = (date && !isNaN(date.getTime())) ? `${date.getFullYear()}-${date.getMonth()}` : 'Sans date';
+                        if (!months[key]) months[key] = [];
+                        months[key].push(article);
+                    }
+                });
+                return { months, published, cancelled };
+            }, [articles]);
+
+            const monthNames = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+
+            return html`
+                <div className="space-y-8">
+                    <section>
+                        <h2 className="text-sm font-semibold text-slate-400 uppercase mb-4 tracking-wider">Planning Actif</h2>
+                        ${Object.entries(grouped.months).sort((a,b) => b[0].localeCompare(a[0])).map(([key, items]) => {
+                            const parts = key.split('-');
+                            const year = parts.length === 2 ? parseInt(parts[0]) : null;
+                            const month = parts.length === 2 ? parseInt(parts[1]) : null;
+                            return html`<${MonthGroup} key=${key} title=${key === 'Sans date' ? "À planifier" : `${monthNames[month]} ${year}`} articles=${items} defaultOpen=${year === currentYear && month === currentMonth} />`;
+                        })}
+                    </section>
+                    <section>
+                        <h2 className="text-sm font-semibold text-slate-400 uppercase mb-4 tracking-wider">Articles Publiés</h2>
+                        <${MonthGroup} title="Archives" articles=${grouped.published} defaultOpen=${false} />
+                    </section>
+                </div>
+            `;
+        };
+
+        const CalendarView = ({ articles }) => {
+            const [viewDate, setViewDate] = useState(new Date());
+            const month = viewDate.getMonth();
+            const year = viewDate.getFullYear();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const firstDay = (new Date(year, month, 1).getDay() + 6) % 7; 
+            const monthName = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' }).format(viewDate);
+
+            const articlesByDay = useMemo(() => {
+                const map = {};
+                articles.forEach((a) => {
+                    const d = new Date(a.datePublication);
+                    if (d.getMonth() === month && d.getFullYear() === year) {
+                        const day = d.getDate();
+                        if (!map[day]) map[day] = [];
+                        map[day].push(a);
+                    }
+                });
+                return map;
+            }, [articles, month, year]);
+
+            return html`
+                <div className="bg-white rounded-3xl border shadow-sm overflow-hidden flex flex-col h-full">
+                    <div className="p-6 border-b flex justify-between items-center">
+                        <h2 className="text-2xl font-bold capitalize">${monthName}</h2>
+                        <div className="flex space-x-2">
+                            <button onClick=${() => setViewDate(new Date(year, month - 1, 1))} className="p-2 border rounded-lg hover:bg-slate-50">Précédent</button>
+                            <button onClick=${() => setViewDate(new Date(year, month + 1, 1))} className="p-2 border rounded-lg hover:bg-slate-50">Suivant</button>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-7 border-b bg-slate-50 text-center text-xs font-bold text-slate-400 py-2">
+                        ${['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map(d => html`<div key=${d}>${d}</div>`)}
+                    </div>
+                    <div className="flex-1 grid grid-cols-7 overflow-y-auto">
+                        ${Array.from({ length: firstDay }).map((_, i) => html`<div key=${i} className="border-r border-b bg-slate-50/50 min-h-[100px]" />`)}
+                        ${Array.from({ length: daysInMonth }).map((_, i) => {
+                            const day = i + 1;
+                            const dayArticles = articlesByDay[day] || [];
+                            return html`
+                                <div key=${day} className="border-r border-b p-2 min-h-[100px] hover:bg-slate-50">
+                                    <span className="text-sm font-bold text-slate-500">${day}</span>
+                                    <div className="mt-1 space-y-1">
+                                        ${dayArticles.map(art => html`
+                                            <div key=${art.id} className="text-[9px] p-1 bg-indigo-50 text-indigo-700 rounded border border-indigo-100 truncate">
+                                                ${art.titre}
+                                            </div>
+                                        `)}
+                                    </div>
+                                </div>
+                            `;
+                        })}
+                    </div>
+                </div>
+            `;
+        };
+
+        const StatsView = ({ articles }) => {
+            const stats = useMemo(() => {
+                const statusCounts = articles.reduce((acc, a) => { acc[a.status] = (acc[a.status] || 0) + 1; return acc; }, {});
+                const statusData = Object.entries(statusCounts).map(([name, value]) => ({ name, value }));
+                const monthData = {};
+                const now = new Date();
+                for (let i = 5; i >= 0; i--) {
+                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                    const key = new Intl.DateTimeFormat('fr-FR', { month: 'short' }).format(d);
+                    monthData[key] = 0;
+                }
+                articles.forEach((a) => {
+                    if (a.status === ArticleStatus.PUBLIE) {
+                        const d = new Date(a.datePublication);
+                        const key = new Intl.DateTimeFormat('fr-FR', { month: 'short' }).format(d);
+                        if (monthData[key] !== undefined) monthData[key]++;
+                    }
+                });
+                return { statusData, timelineData: Object.entries(monthData).map(([name, count]) => ({ name, count })) };
+            }, [articles]);
+
+            const COLORS = ['#6366f1', '#fbbf24', '#3b82f6', '#10b981', '#f43f5e'];
+
+            return html`
+                <div className="space-y-8">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="bg-white p-6 rounded-2xl border shadow-sm">
+                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Total Articles</p>
+                            <p className="text-3xl font-black text-slate-800">${articles.length}</p>
+                        </div>
+                        <div className="bg-white p-6 rounded-2xl border shadow-sm border-emerald-100">
+                            <p className="text-xs font-bold text-emerald-400 uppercase tracking-widest">Publiés</p>
+                            <p className="text-3xl font-black text-slate-800">${articles.filter((a) => a.status === ArticleStatus.PUBLIE).length}</p>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        <div className="bg-white p-6 rounded-2xl border shadow-sm h-[350px]">
+                            <h3 className="font-bold mb-4">Répartition</h3>
+                            <${ResponsiveContainer} width="100%" height="100%">
+                                <${PieChart}>
+                                    <${Pie} data=${stats.statusData} innerRadius=${60} outerRadius=${80} dataKey="value">
+                                        ${stats.statusData.map((e, i) => html`<${Cell} key=${i} fill=${COLORS[i % COLORS.length]} />`)}
+                                    <//>
+                                    <${Tooltip} />
+                                <//>
+                            <//>
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+
+        const MOCK_DATA = [
+            { id: 1, titre: "Stratégie de contenu 2025", type: "Blog", redacteur: "Marc", status: ArticleStatus.PUBLIE, datePublication: "2024-11-25" },
+            { id: 2, titre: "Nouveautés Grist : Guide Complet", type: "Tuto", redacteur: "Julie", status: ArticleStatus.EN_COURS, datePublication: new Date().toISOString() },
+            { id: 3, titre: "L'IA dans le marketing", type: "Enquête", redacteur: "Marc", status: ArticleStatus.VALIDE, datePublication: new Date(new Date().setMonth(new Date().getMonth() + 1)).toISOString() }
+        ];
+
+        const App = () => {
+            const [articles, setArticles] = useState([]);
+            const [view, setView] = useState('planning');
+            const [demo, setDemo] = useState(false);
+
+            useEffect(() => {
+                const grist = window.grist;
+                if (!grist) {
+                    setArticles(MOCK_DATA);
+                    setDemo(true);
+                    return;
+                }
+                grist.ready({ columns: ['titre', 'type', 'redacteur', 'status', 'datePublication'], requiredAccess: 'read' });
+                grist.onRecords((records) => {
+                    const formatted = records.map(r => ({
+                        id: r.id,
+                        titre: r.titre || '',
+                        type: r.type || '',
+                        redacteur: r.redacteur || '',
+                        status: r.status || ArticleStatus.EN_COURS,
+                        datePublication: r.datePublication ? (typeof r.datePublication === 'number' ? new Date(r.datePublication * 1000).toISOString() : r.datePublication) : ''
+                    }));
+                    setArticles(formatted);
+                });
+            }, []);
+
+            return html`
+                <div className="flex h-full w-full overflow-hidden">
+                    <${Sidebar} currentView=${view} onViewChange=${setView} onExport=${() => exportToCSV(articles)} onImport=${(e) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                            const reader = new FileReader();
+                            reader.onload = (ev) => setArticles([...articles, ...parseCSV(ev.target.result)]);
+                            reader.readAsText(file);
+                        }
+                    }} />
+                    <main className="flex-1 flex flex-col min-w-0">
+                        <header className="bg-white border-b px-8 py-4 flex justify-between items-center shadow-sm">
+                            <div className="flex items-center space-x-3">
+                                <h1 className="text-xl font-bold text-slate-800">Édito Planning</h1>
+                                ${demo && html`<span className="text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-1 rounded">DÉMO</span>`}
+                            </div>
+                            <div className="text-sm font-medium text-slate-500 bg-slate-100 px-3 py-1 rounded-full">${articles.length} articles</div>
+                        </header>
+                        <div className="flex-1 overflow-auto p-8">
+                            ${view === 'planning' && html`<${PlanningView} articles=${articles} />`}
+                            ${view === 'calendar' && html`<${CalendarView} articles=${articles} />`}
+                            ${view === 'stats' && html`<${StatsView} articles=${articles} />`}
+                        </div>
+                    </main>
+                </div>
+            `;
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(html`<${App} />`);
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
